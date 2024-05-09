@@ -8,5 +8,5 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.38"
 clap = { version = "4.5.4", features = ["derive"] }
-nmea0183 = { version = "0.1.0", path = "../nmea0183" }
+libnmea0183 = { version = "0.1.0", path = "../libnmea0183" }
 regex = "1.10.4"
