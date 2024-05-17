@@ -1,5 +1,6 @@
 /target
+/.idea
+/.fleet
 Cargo.lock
-.git
 *~
 src/*~

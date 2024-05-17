@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = "0.4.38"
-clap = { version = "4.5.4", features = ["derive"] }
-nmea0183 = { version = "0.1.0", path = "../nmea0183" }
-regex = "1.10.4"
+chrono = "0" # originally 0.4.38
+clap = { version = "4", features = ["derive"] } # originally 4.5.4
+libnmea0183 = { version = "0", path = "../libnmea0183" } # originally 0.1.0
+regex = "1" # originally 1.10.4
