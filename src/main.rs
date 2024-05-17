@@ -7,6 +7,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::process::exit;
 use std::{fmt, fs};
 use std::fs::OpenOptions;
+use std::path::Path;
 
 // *****************************************************************************************
 // Command Line parsing
@@ -136,7 +137,8 @@ impl NMEAFile {
         match cli.input_file_name.clone() {
             None => reader = Box::new(BufReader::new(io::stdin())),
             Some(filename) => {
-                let f = fs::File::open(filename);
+                let p = Path::new(&filename);
+                let f = fs::File::open(&p);
                 if f.is_err() {
                     eprintln!("{:?}", f);
                     return None;
@@ -307,17 +309,16 @@ impl NMEAFile {
             _ => {}
         }
         if buffer.len() > 0 {
-            if let Ok(nmea) = Nmea0183Base::from_string(&buffer) {
-                let message = nmea.message.as_str();
-                let sender = nmea.sender.as_str();
+            if let Ok(nmea_base) = Nmea0183Base::from_string(&buffer) {
+                let message = nmea_base.message.as_str();
+                let sender = nmea_base.sender.as_str();
 
                 if self.include_messages.is_match(message)
                     && !self.exclude_messages.is_match(message)
                     && self.include_devices.is_match(sender)
                     && !self.exclude_devices.is_match(sender)
                 {
-                    let nmea = libnmea0183::classify(nmea);
-                    match nmea {
+                    match libnmea0183::classify(nmea_base) {
                         Nmea0183::BWC(sentence) => self.update_time_only(
                             sentence
                                 .timestamp()
@@ -398,11 +399,8 @@ impl fmt::Display for NMEAFile {
 
 fn main() {
     let cli = Cli::parse();
-
-    let n = NMEAFile::new(&cli);
-    if n.is_some() {
-        n.unwrap().process();
-    } else {
-        eprintln!("{}", n.unwrap());
+    match NMEAFile::new(&cli) {
+        None => eprintln!("Could not create NMEAFile tracking system."),
+        Some(mut n) => n.process(),
     }
 }
