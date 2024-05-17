@@ -1,10 +1,12 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Days, NaiveDateTime, NaiveTime, Utc};
 use clap::Parser;
 use core::fmt::Debug;
-use libnmea0183::base::Nmea0183Base;
+use libnmea0183::{base::Nmea0183Base, Nmea0183};
 use regex::Regex;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
+use std::process::exit;
 use std::{fmt, fs};
+use std::fs::OpenOptions;
 
 // *****************************************************************************************
 // Command Line parsing
@@ -15,11 +17,26 @@ use std::{fmt, fs};
 struct Cli {
     input_file_name: Option<String>,
 
-    #[arg(long = "start", short, help = "earliest date/time to log in Utc")]
+    #[arg(
+        long = "start",
+        short,
+        help = "earliest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
+    )]
     start_date: Option<String>,
 
-    #[arg(long = "end", short, help = "latest date/time to log in Utc")]
+    #[arg(
+        long = "end",
+        short,
+        help = "latest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
+    )]
     end_date: Option<String>,
+
+    #[arg(
+        long = "count",
+        short = 'c',
+        help = "Display running count of lines processed"
+    )]
+    display_count: bool,
 
     #[arg(
         long = "devices",
@@ -66,6 +83,12 @@ struct Cli {
         help = "terminate on i/o error."
     )]
     terminate_on_err: bool,
+
+    #[arg(
+    long = "init",
+    help = "Initialization data to send to NMEA"
+    )]
+    initialization : Option<Vec<String>>,
 }
 
 // *****************************************************************************************
@@ -76,81 +99,144 @@ struct NMEAFile {
     stream: Box<dyn BufRead>,
     start_timestamp: DateTime<Utc>,
     end_timestamp: DateTime<Utc>,
+    display_count: bool,
     include_devices: Regex,
     exclude_devices: Regex,
     include_messages: Regex,
     exclude_messages: Regex,
-    most_recent_time: DateTime<Utc>,
+    most_recent_timestamp: DateTime<Utc>,
     terminate_eof: bool,
     terminate_err: bool,
 }
 
-fn create_timestamp(
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-) -> Option<DateTime<Utc>> {
-    let naivedate = NaiveDate::from_ymd_opt(year, month, day)?;
-    let naivetime = NaiveTime::from_hms_opt(hour, minute, second)?;
-    let naivedatetime = NaiveDateTime::new(naivedate, naivetime);
-    Some(DateTime::from_naive_utc_and_offset(naivedatetime, Utc))
-}
-
 impl NMEAFile {
     fn new(cli: &Cli) -> Option<NMEAFile> {
-        let reader: Box<dyn BufRead> = match cli.input_file_name.clone() {
-            None => Box::new(BufReader::new(io::stdin())),
-            Some(filename) => Box::new(BufReader::new(fs::File::open(filename).unwrap())),
+        if cli.initialization.is_some() {
+            match cli.input_file_name.clone() {
+                None => {
+                    let mut d = io::stdout();
+                    for l in cli.initialization.clone().unwrap() {
+                        d.write(l.as_bytes()).expect("Could not initialize stdout");
+                        d.write(&['\n' as u8]).expect("Could not terminate initialization on stdout");
+                    }
+                },
+                Some(filename) => {
+                    if let Ok(mut data_file) = OpenOptions::new().append(true).open(filename) {
+                        for l in cli.initialization.clone().unwrap() {
+                            data_file
+                                .write(l.as_bytes()).expect("Could not initialize device");
+                            data_file.write(&['\n' as u8]).expect("Could not terminate initialization on device");
+                        }
+                    };
+                }
+            }
+        }
+
+        let reader: Box<dyn BufRead>;
+        match cli.input_file_name.clone() {
+            None => reader = Box::new(BufReader::new(io::stdin())),
+            Some(filename) => {
+                let f = fs::File::open(filename);
+                if f.is_err() {
+                    eprintln!("{:?}", f);
+                    return None;
+                }
+                reader = Box::new(BufReader::new(f.unwrap()))
+            }
         };
 
-        let start_timestamp =
-            create_timestamp(1900, 1, 1, 0, 0, 0).expect("Could not create starting timestamp");
-        let end_timestamp =
-            create_timestamp(2100, 12, 31, 23, 59, 59).expect("Could not create ending timestamp");
+        let binding_default = Some(vec![String::from(".*")]);
+        let include_devices = {
+            let binding_local = &(cli.include_devices.clone());
+            NMEAFile::create_regex(if cli.include_devices.is_some() {
+                &binding_local
+            } else {
+                &binding_default
+            })
+        };
 
-        let binding1 = Some(vec![String::from(".*")]);
-        let binding2 = &(cli.include_devices.clone());
-        let include_devices = NMEAFile::create_regex(if cli.include_devices.is_some() {
-            &binding2
-        } else {
-            &binding1
-        });
+        let include_messages = {
+            let binding_local = cli.include_messages.clone();
+            NMEAFile::create_regex(if cli.include_messages.is_some() {
+                &binding_local
+            } else {
+                &binding_default
+            })
+        };
 
-        let binding3 = cli.include_messages.clone();
-        let include_messages = NMEAFile::create_regex(if cli.include_messages.is_some() {
-            &binding3
-        } else {
-            &binding1
-        });
+        let binding_default = Some(vec![String::from("^$")]);
+        let exclude_devices = {
+            let binding_local = cli.exclude_devices.clone();
+            NMEAFile::create_regex(if cli.exclude_devices.is_some() {
+                &binding_local
+            } else {
+                &binding_default
+            })
+        };
 
-        let binding4 = cli.exclude_devices.clone();
-        let binding5 = Some(vec![String::from("^$")]);
-        let exclude_devices = NMEAFile::create_regex(if cli.exclude_devices.is_some() {
-            &binding4
-        } else {
-            &binding5
-        });
+        let exclude_messages = {
+            let binding_local = cli.exclude_messages.clone();
+            NMEAFile::create_regex(if cli.exclude_messages.is_some() {
+                &binding_local
+            } else {
+                &binding_default
+            })
+        };
 
-        let binding6 = cli.exclude_messages.clone();
-        let exclude_messages = NMEAFile::create_regex(if cli.exclude_messages.is_some() {
-            &binding6
+        let most_recent_timestamp = {
+            let current_timestamp = Utc::now();
+            let current_date = current_timestamp.date_naive();
+            let current_time = NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+            let naive_timestamp = NaiveDateTime::new(current_date, current_time);
+            naive_timestamp.and_utc()
+        };
+
+        let start_timestamp = if cli.start_date.is_none() {
+            DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
         } else {
-            &binding5
-        });
+            match DateTime::parse_from_rfc3339(cli.start_date.clone().unwrap().as_str()) {
+                Ok(d) => d.with_timezone(&Utc),
+                Err(e) => {
+                    eprintln!("{e:?}");
+                    exit(-1);
+                }
+            }
+        };
+
+        let end_timestamp = if cli.end_date.is_none() {
+            DateTime::parse_from_rfc3339("2050-12-31T23:59:59Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        } else {
+            match DateTime::parse_from_rfc3339(cli.end_date.clone().unwrap().as_str()) {
+                Ok(d) => d.with_timezone(&Utc),
+                Err(e) => {
+                    eprintln!("{e:?}");
+                    exit(-1);
+                }
+            }
+        };
+
+        println!("Start time {:?} End time {:?}", start_timestamp, end_timestamp);
+        if start_timestamp > end_timestamp {
+            eprintln!("Start time is after or the same as end time.");
+            exit(-1);
+        }
+
+        let display_count = cli.display_count;
 
         Some(NMEAFile {
             stream: reader,
             start_timestamp,
             end_timestamp,
+            display_count,
             include_devices,
             exclude_devices,
             include_messages,
             exclude_messages,
-            most_recent_time: create_timestamp(1900, 1, 1, 0, 0, 0)
-                .expect("Could not create starting current timestamp"),
+            most_recent_timestamp,
             terminate_eof: cli.terminate_on_eof,
             terminate_err: cli.terminate_on_err,
         })
@@ -176,8 +262,8 @@ impl NMEAFile {
     }
 
     fn process(&mut self) {
-        eprintln!("{self}");
         let mut buffer = String::new();
+        let mut linecount: u128 = 0;
         loop {
             buffer.clear();
             match self.stream.read_line(&mut buffer) {
@@ -192,10 +278,25 @@ impl NMEAFile {
                     if n == 0 && self.terminate_eof {
                         return;
                     }
+                    if self.display_count {
+                        linecount += 1;
+                        eprint!("{linecount} \r");
+                    }
                     self.process_line(&buffer);
                 }
             }
         }
+    }
+
+    fn update_time_only(&mut self, timestamp: NaiveTime) {
+        let mut current_date = self.most_recent_timestamp.date_naive();
+        let current_time = self.most_recent_timestamp.time();
+        if current_time > timestamp {
+            // increment current_date by one day
+            current_date = current_date.checked_add_days(Days::new(1)).unwrap();
+        }
+        let naive_date_stamp = NaiveDateTime::new(current_date, timestamp);
+        self.most_recent_timestamp = DateTime::from_naive_utc_and_offset(naive_date_stamp, Utc);
     }
 
     fn process_line(&mut self, buffer: &String) {
@@ -207,7 +308,6 @@ impl NMEAFile {
         }
         if buffer.len() > 0 {
             if let Ok(nmea) = Nmea0183Base::from_string(&buffer) {
-                println!("{nmea:?}");
                 let message = nmea.message.as_str();
                 let sender = nmea.sender.as_str();
 
@@ -216,7 +316,64 @@ impl NMEAFile {
                     && self.include_devices.is_match(sender)
                     && !self.exclude_devices.is_match(sender)
                 {
-                    println!("{buffer}");
+                    let nmea = libnmea0183::classify(nmea);
+                    match nmea {
+                        Nmea0183::BWC(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in BWC sentence"),
+                        ),
+                        Nmea0183::BWR(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in BWR sentence"),
+                        ),
+                        Nmea0183::GBS(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in GBS sentence"),
+                        ),
+                        Nmea0183::GGA(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in GGA sentence"),
+                        ),
+                        Nmea0183::GLL(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in GLL sentence"),
+                        ),
+                        Nmea0183::GRS(sentence) => self.update_time_only(
+                            sentence.timestamp().expect("Internal error in GRS message"),
+                        ),
+                        Nmea0183::GST(sentence) => self.update_time_only(
+                            sentence.timestamp().expect("Internal error in GST message"),
+                        ),
+                        Nmea0183::GXA(sentence) => self.update_time_only(
+                            sentence.timestamp().expect("Internal error in GXA message"),
+                        ),
+                        Nmea0183::RMC(sentence) => {
+                            self.most_recent_timestamp = sentence
+                                .timestamp()
+                                .expect("Internal error in RMC sentence")
+                        }
+                        Nmea0183::TRF(sentence) => self.update_time_only(
+                            sentence
+                                .timestamp()
+                                .expect("Internal error in TRF sentence"),
+                        ),
+                        Nmea0183::ZDA(sentence) => {
+                            self.most_recent_timestamp = sentence
+                                .timestamp()
+                                .expect("Internal error in ZDA sentence")
+                        }
+                        _ => {}
+                    }
+                    if self.most_recent_timestamp >= self.start_timestamp
+                        && self.most_recent_timestamp <= self.end_timestamp
+                    {
+                        println!("{buffer}");
+                    }
                 }
             }
         }
@@ -230,7 +387,7 @@ impl fmt::Display for NMEAFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "NMEAFile {{ stream: <not printable>, start_timestamp: {:?}, end_timestamp: {:?}, include_devices: {:?}, exclude_devices: {:?}, include_messages: {:?}, exclude_messages: {:?} most_recent_time: {:?}, terminate_eof: {:?}, terminate_err: {:?} }}",
 	       self.start_timestamp, self.end_timestamp, self.include_devices, self.exclude_devices,
-	       self.include_messages, self.exclude_messages, self.most_recent_time,
+	       self.include_messages, self.exclude_messages, self.most_recent_timestamp,
 	       self.terminate_err, self.terminate_eof)
     }
 }
@@ -241,8 +398,11 @@ impl fmt::Display for NMEAFile {
 
 fn main() {
     let cli = Cli::parse();
-    eprintln!("{cli:?}");
-    if let Some(mut n) = NMEAFile::new(&cli) {
-        n.process();
+
+    let n = NMEAFile::new(&cli);
+    if n.is_some() {
+        n.unwrap().process();
+    } else {
+        eprintln!("{}", n.unwrap());
     }
 }
