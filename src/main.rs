@@ -19,20 +19,6 @@ struct Cli {
     input_file_name: Option<String>,
 
     #[arg(
-        long = "start",
-        short,
-        help = "earliest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
-    )]
-    start_date: Option<String>,
-
-    #[arg(
-        long = "end",
-        short,
-        help = "latest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
-    )]
-    end_date: Option<String>,
-
-    #[arg(
         long = "count",
         short = 'c',
         help = "Display running count of lines processed"
@@ -56,6 +42,19 @@ struct Cli {
     exclude_devices: Option<Vec<String>>,
 
     #[arg(
+        long = "end",
+        short,
+        help = "latest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
+    )]
+    end_date: Option<String>,
+
+    #[arg(
+    long = "init",
+    help = "Initialization data to send to NMEA"
+    )]
+    initialization : Option<Vec<String>>,
+
+    #[arg(
         long = "messages",
         short = 'm',
         use_value_delimiter = true,
@@ -72,6 +71,13 @@ struct Cli {
     exclude_messages: Option<Vec<String>>,
 
     #[arg(
+        long = "start",
+        short,
+        help = "earliest date/time to log in Utc formatted as yyyy-mm-ddThh:mm:ssZ"
+    )]
+    start_date: Option<String>,
+
+    #[arg(
         long = "termeof",
         default_value_t = false,
         help = "terminate on end of file."
@@ -84,12 +90,6 @@ struct Cli {
         help = "terminate on i/o error."
     )]
     terminate_on_err: bool,
-
-    #[arg(
-    long = "init",
-    help = "Initialization data to send to NMEA"
-    )]
-    initialization : Option<Vec<String>>,
 }
 
 // *****************************************************************************************
